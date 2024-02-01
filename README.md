@@ -1,1 +1,1 @@
-"# Taurus Bank" 
+# Taurus Bank
