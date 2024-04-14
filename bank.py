@@ -1,5 +1,5 @@
 from sqlite3 import connect
-from datetime import datetime
+from datetime import datetime, timedelta
 from sys import argv
 from decimal import getcontext, Decimal
 from tabulate import tabulate
@@ -28,13 +28,16 @@ def create_acc(cust_id, name):
     db.close()
     print(f"Account created successfully.")
 
-def credit(cust_id, amt, remark):
+def credit(cust_id, amt, remark, offset=0):
     print(f"Account holder: {get_name(cust_id, acc_db)}\n")
     db = connect(acc_db)
     cr = db.cursor()
     new_bal = str((Decimal(get_bal(cust_id, acc_db))+Decimal(amt)).quantize(Decimal('.01')))
 
     timestamp = datetime.now()
+    offset_hrs = timedelta(hours=offset)
+    timestamp = timestamp - offset_hrs
+    
     income = Decimal(get_income(cust_id, acc_db))+Decimal(amt)
     income = str(income.quantize(Decimal('.01')))
 
@@ -52,13 +55,16 @@ def credit(cust_id, amt, remark):
     print(f"Credited ${amt} successfully.")
     print(f"Current balance: {get_bal(cust_id, acc_db)}")
 
-def debit(cust_id, amt, remark):
+def debit(cust_id, amt, remark, offset=0):
     print(f"Account holder: {get_name(cust_id, acc_db)}\n")
     db = connect(acc_db)
     cr = db.cursor()
     new_bal = str((Decimal(get_bal(cust_id, acc_db))-Decimal(amt)).quantize(Decimal('.01')))
 
     timestamp = datetime.now()
+    offset_hrs = timedelta(hours=offset)
+    timestamp = timestamp - offset_hrs
+    
     expenditure = Decimal(get_expenditure(cust_id, acc_db))+Decimal(amt)
     expenditure = str(expenditure.quantize(Decimal('.01')))
 
@@ -75,6 +81,44 @@ def debit(cust_id, amt, remark):
     db.close()
     print(f"Debited ${amt} successfully.")
     print(f"Current balance: {get_bal(cust_id, acc_db)}")
+
+def undo_last_tnx(cust_id):
+    db = connect(tnxs_db)
+    cr = db.cursor()
+    res = db.execute(f"SELECT type, amt, remark, timestamp, balance FROM transactions WHERE custID='{cust_id}' ORDER BY timestamp DESC LIMIT 1") 
+    type=''
+    amt=''
+    remark=''
+    timestamp=''
+    balance=''
+    for t in res:
+        type = t[0]
+        amt = t[1]
+        remark = t[2]
+        timestamp = t[3]
+        balance = t[4]
+    cr.execute(f"DELETE FROM transactions WHERE custID='{cust_id}' AND timestamp='{timestamp}' AND amt='{amt}' AND remark='{remark}' AND type='{type}' AND balance='{balance}'")    #delete last tnx record
+    db.commit()
+    db.close()
+    
+    db = connect(acc_db)
+    cr = db.cursor()
+    if type=='credit':
+        new_bal = str((Decimal(get_bal(cust_id, acc_db))-Decimal(amt)).quantize(Decimal('.01')))
+        new_income = str((Decimal(get_income(cust_id, acc_db))-Decimal(amt)).quantize(Decimal('.01')))
+        cr.execute(f"UPDATE accounts SET bal= '{new_bal}' WHERE custID='{cust_id}'")
+        cr.execute(f"UPDATE accounts SET income= '{new_income}' WHERE custID='{cust_id}'")
+    else:
+        new_bal = str((Decimal(get_bal(cust_id, acc_db))-Decimal(amt)).quantize(Decimal('.01')))
+        new_expenditure = str((Decimal(get_expenditure(cust_id, acc_db))+Decimal(amt)).quantize(Decimal('.01')))
+        cr.execute(f"UPDATE accounts SET bal= '{new_bal}' WHERE custID='{cust_id}'")
+        cr.execute(f"UPDATE accounts SET expenditure= '{new_expenditure}' WHERE custID='{cust_id}'")
+    db.commit()
+    db.close()
+    
+    print("The following transaction is deleted:")
+    table = zip([type], [amt], [remark], [balance], [timestamp])
+    print(tabulate(table, headers=["type", "amt", "remark", "balance", "timestamp"], floatfmt=".2f"))
 
 def accs():
     db = connect(acc_db)
@@ -104,7 +148,33 @@ def del_acc(cust_id):
         print(f"Deleted successfully.")
     else:
         print("Aborted.")
-
+        
+def calc_int(cust_id, int_rate, date1, date2):
+    intrest = Decimal('0').quantize(Decimal('.000001'))
+    init_date = datetime.strptime(date1, "%d-%m-%Y")
+    final_date = datetime.strptime(date2, "%d-%m-%Y")
+    int_perc = (Decimal(int_rate)/Decimal('100')).quantize(Decimal('.00001'))
+    for day in range(0, (final_date-init_date).days):
+        this_day = init_date + timedelta(days=day)
+        eod_bal = Decimal(get_eod_bal(cust_id, this_day, tnxs_db))
+        intrest = Decimal(intrest+(Decimal(eod_bal*int_perc)/Decimal('365'))).quantize(Decimal('.000001'))
+    intrest = str(intrest.quantize(Decimal('.01')))
+    keys = [
+    "custID", 
+    "name", 
+    "intrest period start", 
+    "intrest period end",
+    "calculatd intrest", 
+    ]
+    values = [
+    "@"+cust_id, 
+    get_name(cust_id, acc_db), 
+    date1,
+    date2,
+    intrest
+    ]
+    table = zip(keys, values)
+    print(tabulate(table, floatfmt=".2f"))
 
 def acc(cust_id):
     keys = [
@@ -160,17 +230,19 @@ def tnxs(cust_id):
 if __name__ == "__main__":
     header_msg="""\
 Taurus Bank Inc.
-v4.3.8 \
+v4.6.2 \
 """
     commands="""
 Available commands:
 - bank create_acc [custId] [name]
-- bank credit [custId] [$amt] ["remark"]
-- bank debit [custId] [$amt] ["remark"]
+- bank credit [custId] [$amt] ["remark"] ($offset)
+- bank debit [custId] [$amt] ["remark"] ($offset)
+- bank undo [custId]
 - bank acc [custId]
 - bank bal [custId]
 - bank plot_bal [custID]
 - bank tnxs [custId]
+- bank calc_int [custID] [intrest_rate] [start_date] [end_date]
 - bank accs (list of accounts)
 - bank del_acc [custId] \
         """
@@ -181,9 +253,17 @@ Available commands:
         elif argv[1] == 'create_acc':
             create_acc(argv[2], argv[3])
         elif argv[1] == 'credit':
-            credit(argv[2], argv[3], argv[4])
+            if len(argv)>5:
+                credit(argv[2], argv[3], argv[4], offset=int(argv[5]))
+            else:
+                credit(argv[2], argv[3], argv[4])
         elif argv[1] == 'debit':
-            debit(argv[2], argv[3], argv[4])
+            if len(argv)>5:
+                debit(argv[2], argv[3], argv[4], offset=int(argv[5]))
+            else:
+                debit(argv[2], argv[3], argv[4])
+        elif argv[1] == 'undo':
+            undo_last_tnx(argv[2])
         elif argv[1] == 'acc':
             acc(argv[2])
         elif argv[1] == 'bal':
@@ -194,6 +274,8 @@ Available commands:
             tnxs(argv[2])
         elif argv[1] == 'accs':
             accs()
+        elif argv[1] == 'calc_int':
+            calc_int(argv[2], argv[3], argv[4], argv[5])
         elif argv[1] == 'del_acc':
             del_acc(argv[2])
         elif argv[1] == 'help':

@@ -71,7 +71,13 @@ def get_inrate(cust_id, acc_db):
     inrate = str((income/((Decimal(number_of_days))+1)).quantize(Decimal('.01')))
     return inrate
 
-def get_eod_bal(cust_id, date, acc_db):
-    pass
-    #date as string in iso format
-    
+def get_eod_bal(cust_id, date, tnxs_db):
+    db = connect(tnxs_db)
+    eod_bal = ""
+    res = db.execute(f"SELECT balance, timestamp FROM transactions WHERE custID='{cust_id}' ORDER BY timestamp DESC")
+    for x in res:
+        this_date = datetime.strptime(x[1][0:10], "%Y-%m-%d")
+        if (this_date==date) or (this_date<date):
+            eod_bal = x[0]
+            break 
+    return eod_bal
